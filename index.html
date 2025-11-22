@@ -584,7 +584,7 @@
                 <div class="upload-icon">📤</div>
                 <p class="upload-text">Klik atau Drag & Drop File PDF</p>
                 <p class="upload-hint">Support multiple files • Maksimal 50 MB per file</p>
-                <input type="file" id="fileInput" accept=".pdf" multiple>
+                <input type="file" id="fileInput" accept=".pdf,image/*,.jpg,.jpeg,.png,.gif,.webp" multiple>
             </div>
 
             <div class="files-section" id="filesContainer">
@@ -668,8 +668,11 @@
 
         function handleFiles(fileList) {
             for (let file of fileList) {
-                if (file.type !== 'application/pdf') {
-                    alert(`${file.name} bukan file PDF!`);
+                const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+                const isImage = file.type.startsWith('image/') || /\.(jpe?g|png|gif|webp)$/i.test(file.name);
+
+                if (!isPdf && !isImage) {
+                    alert(`${file.name} bukan file PDF atau gambar yang didukung!`);
                     continue;
                 }
 
@@ -682,25 +685,27 @@
                 files.push({
                     id,
                     file,
+                    type: isImage ? 'image' : 'pdf',
                     status: 'pending',
                     compressed: null,
                     error: null
                 });
 
-                addFileToList(id, file);
+                addFileToList(id, file, isImage ? 'image' : 'pdf');
             }
 
             updateUI();
         }
 
-        function addFileToList(id, file) {
+        function addFileToList(id, file, type = 'pdf') {
             const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
             
             const fileCard = document.createElement('div');
             fileCard.className = 'file-card';
             fileCard.id = `file-${id}`;
+            const icon = type === 'image' ? '🖼️' : '📄';
             fileCard.innerHTML = `
-                <div class="file-icon">📄</div>
+                <div class="file-icon">${icon}</div>
                 <div class="file-details">
                     <div class="file-name">${file.name}</div>
                     <div class="file-size">Ukuran: ${sizeMB} MB</div>
@@ -715,6 +720,133 @@
             `;
 
             filesList.appendChild(fileCard);
+        }
+
+        // helper: canvas toBlob promise
+        function canvasToBlob(canvas, type, quality) {
+            return new Promise((resolve) => {
+                canvas.toBlob((blob) => resolve(blob), type, quality);
+            });
+        }
+
+        // Compress image file to target bytes (1MB) by reducing quality and scale
+        async function compressImage(fileData) {
+            const { id, file } = fileData;
+            const fileCard = document.getElementById(`file-${id}`);
+            const statusBadge = document.getElementById(`status-${id}`);
+            const progressBar = document.getElementById(`progress-${id}`);
+            const actionsDiv = document.getElementById(`actions-${id}`);
+
+            fileData.status = 'processing';
+            fileCard.classList.add('processing');
+            statusBadge.className = 'status-badge badge-processing';
+            statusBadge.textContent = 'Memproses...';
+
+            try {
+                const imgUrl = URL.createObjectURL(file);
+                const img = await new Promise((resolve, reject) => {
+                    const i = new Image();
+                    i.onload = () => resolve(i);
+                    i.onerror = reject;
+                    i.src = imgUrl;
+                });
+
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                let width = img.naturalWidth;
+                let height = img.naturalHeight;
+
+                const qualityList = [0.92, 0.85, 0.75, 0.6, 0.5, 0.4, 0.3, 0.2];
+                const scaleList = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5];
+                const TARGET_BYTES = 1 * 1024 * 1024;
+
+                let bestBlob = null;
+
+                for (let s = 0; s < scaleList.length; s++) {
+                    const scale = scaleList[s];
+                    canvas.width = Math.max(1, Math.floor(width * scale));
+                    canvas.height = Math.max(1, Math.floor(height * scale));
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                    for (let q = 0; q < qualityList.length; q++) {
+                        const quality = qualityList[q];
+                        const blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+                        if (!blob) continue;
+
+                        const percent = Math.min(95, Math.round(((s * qualityList.length + q) / (scaleList.length * qualityList.length)) * 100));
+                        progressBar.style.width = percent + '%';
+
+                        if (!bestBlob || blob.size < bestBlob.size) bestBlob = blob;
+
+                        if (blob.size <= TARGET_BYTES) {
+                            URL.revokeObjectURL(imgUrl);
+                            const compressedSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
+                            fileData.status = 'success';
+                            fileData.compressed = blob;
+
+                            fileCard.classList.remove('processing');
+                            fileCard.classList.add('success');
+                            statusBadge.className = 'status-badge badge-success';
+                            statusBadge.textContent = `✓ ${compressedSizeMB} MB`;
+
+                            const sizeInfo = document.querySelector(`#file-${id} .file-size`);
+                            const originalSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                            sizeInfo.innerHTML = `Asli: ${originalSizeMB} MB → Hasil: <strong>${compressedSizeMB} MB</strong>`;
+
+                            actionsDiv.innerHTML = `
+                                <button class="btn btn-download" onclick="downloadFile(${id})">⬇️</button>
+                                <button class="btn btn-remove" onclick="removeFile(${id})">❌</button>
+                            `;
+
+                            updateUI();
+                            return;
+                        }
+                    }
+                }
+
+                if (bestBlob) {
+                    URL.revokeObjectURL(imgUrl);
+                    const blob = bestBlob;
+                    const compressedSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
+                    fileData.status = 'success';
+                    fileData.compressed = blob;
+
+                    fileCard.classList.remove('processing');
+                    fileCard.classList.add('success');
+                    statusBadge.className = 'status-badge badge-success';
+                    statusBadge.textContent = `✓ ${compressedSizeMB} MB`;
+
+                    const sizeInfo = document.querySelector(`#file-${id} .file-size`);
+                    const originalSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                    sizeInfo.innerHTML = `Asli: ${originalSizeMB} MB → Hasil: <strong>${compressedSizeMB} MB</strong>`;
+
+                    actionsDiv.innerHTML = `
+                        <button class="btn btn-download" onclick="downloadFile(${id})">⬇️</button>
+                        <button class="btn btn-remove" onclick="removeFile(${id})">❌</button>
+                    `;
+
+                    updateUI();
+                    return;
+                }
+
+                throw new Error('Gagal mengkompres gambar');
+
+            } catch (error) {
+                console.error(error);
+                fileData.status = 'error';
+                fileData.error = (error && error.message) ? error.message : String(error);
+
+                fileCard.classList.remove('processing');
+                fileCard.classList.add('error');
+                statusBadge.className = 'status-badge badge-error';
+                statusBadge.textContent = '✗ Gagal';
+
+                const sizeInfo = document.querySelector(`#file-${id} .file-size`);
+                sizeInfo.innerHTML = `<span style="color: #ef4444;">Error: Gagal mengkompress</span>`;
+            }
+
+            updateUI();
         }
 
         function updateUI() {
@@ -757,7 +889,11 @@
             
             for (let fileData of files) {
                 if (fileData.status !== 'pending') continue;
-                await compressFile(fileData);
+                if (fileData.type === 'image') {
+                    await compressImage(fileData);
+                } else {
+                    await compressFile(fileData);
+                }
             }
 
             compressAllBtn.disabled = false;
@@ -922,7 +1058,12 @@
             const url = URL.createObjectURL(fileData.compressed);
             const a = document.createElement('a');
             a.href = url;
-            a.download = fileData.file.name.replace('.pdf', '_compressed.pdf');
+            const baseName = fileData.file.name.replace(/\.[^/.]+$/, '');
+            if (fileData.type === 'image') {
+                a.download = baseName + '_compressed.jpg';
+            } else {
+                a.download = baseName + '_compressed.pdf';
+            }
             a.click();
             URL.revokeObjectURL(url);
         }
@@ -934,7 +1075,12 @@
                         const url = URL.createObjectURL(fileData.compressed);
                         const a = document.createElement('a');
                         a.href = url;
-                        a.download = fileData.file.name.replace('.pdf', '_compressed.pdf');
+                        const baseName = fileData.file.name.replace(/\.[^/.]+$/, '');
+                        if (fileData.type === 'image') {
+                            a.download = baseName + '_compressed.jpg';
+                        } else {
+                            a.download = baseName + '_compressed.pdf';
+                        }
                         a.click();
                         URL.revokeObjectURL(url);
                     }, 200 * index);
