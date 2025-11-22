@@ -6,6 +6,9 @@
     <title>PDF Compressor Pro - Batch Processing</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
 
@@ -584,6 +587,13 @@
                 <div class="upload-icon">📤</div>
                 <p class="upload-text">Klik atau Drag & Drop File PDF</p>
                 <p class="upload-hint">Support multiple files • Maksimal 50 MB per file</p>
+                <div style="margin-top:12px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+                    <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);"><input type="checkbox" id="optImage" checked> Image</label>
+                    <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);"><input type="checkbox" id="optPdf" checked> PDF</label>
+                    <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);"><input type="checkbox" id="optWord" > Word</label>
+                    <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);"><input type="checkbox" id="optCsv" > CSV</label>
+                    <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);"><input type="checkbox" id="optAggressiveImage"> Aggressive image (PNG/GIF → WebP)</label>
+                </div>
                 <input type="file" id="fileInput" accept=".pdf,image/*,.jpg,.jpeg,.png,.gif,.webp" multiple>
             </div>
 
@@ -672,7 +682,7 @@
                 const isImage = file.type.startsWith('image/') || /\.(jpe?g|png|gif|webp)$/i.test(file.name);
 
                 if (!isPdf && !isImage) {
-                    alert(`${file.name} bukan file PDF atau gambar yang didukung!`);
+                    alert(`${file.name} bukan file yang didukung! (pdf, image)`);
                     continue;
                 }
 
@@ -682,16 +692,18 @@
                 }
 
                 const id = fileId++;
+                const ftype = isImage ? 'image' : 'pdf';
+
                 files.push({
                     id,
                     file,
-                    type: isImage ? 'image' : 'pdf',
+                    type: ftype,
                     status: 'pending',
                     compressed: null,
                     error: null
                 });
 
-                addFileToList(id, file, isImage ? 'image' : 'pdf');
+                addFileToList(id, file, ftype);
             }
 
             updateUI();
@@ -703,7 +715,10 @@
             const fileCard = document.createElement('div');
             fileCard.className = 'file-card';
             fileCard.id = `file-${id}`;
-            const icon = type === 'image' ? '🖼️' : '📄';
+            let icon = '📄';
+            if (type === 'image') icon = '🖼️';
+            else if (type === 'word') icon = '📝';
+            else if (type === 'csv') icon = '🔢';
             fileCard.innerHTML = `
                 <div class="file-icon">${icon}</div>
                 <div class="file-details">
@@ -762,6 +777,38 @@
 
                 let bestBlob = null;
 
+                // determine output mime type to preserve original where possible
+                let outType = file.type || 'image/jpeg';
+                if (!outType.startsWith('image/')) outType = 'image/jpeg';
+                // If user enabled aggressive conversion, convert PNG/GIF to WebP for better compression
+                try {
+                    const aggressive = !!document.getElementById('optAggressiveImage') && document.getElementById('optAggressiveImage').checked;
+                    const lowerName = file.name.toLowerCase();
+                    if (aggressive) {
+                        if (outType === 'image/png' || lowerName.endsWith('.png') || lowerName.endsWith('.gif')) {
+                            outType = 'image/webp';
+                        }
+                    }
+                } catch (e) {
+                    // ignore if DOM not ready
+                }
+
+                // helper: check WebP support in this browser
+                function browserSupportsWebP() {
+                    try {
+                        const c = document.createElement('canvas');
+                        if (!!(c.getContext && c.getContext('2d'))) {
+                            return c.toDataURL('image/webp').indexOf('data:image/webp') === 0;
+                        }
+                    } catch (e) {}
+                    return false;
+                }
+
+                if (outType === 'image/webp' && !browserSupportsWebP()) {
+                    // fallback to jpeg for browsers without WebP support
+                    outType = 'image/jpeg';
+                }
+
                 for (let s = 0; s < scaleList.length; s++) {
                     const scale = scaleList[s];
                     canvas.width = Math.max(1, Math.floor(width * scale));
@@ -771,7 +818,26 @@
 
                     for (let q = 0; q < qualityList.length; q++) {
                         const quality = qualityList[q];
-                        const blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+
+                        // choose mime/quality depending on original type
+                        let mime = outType;
+                        let useQuality = quality;
+                        if (outType === 'image/png') {
+                            // PNG doesn't support quality param in canvas; rely on scaling
+                            mime = 'image/png';
+                            useQuality = undefined;
+                        } else if (outType === 'image/gif') {
+                            // GIF from canvas often not supported; convert to webp for better compression
+                            mime = 'image/webp';
+                        } else if (outType === 'image/jpeg' || outType === 'image/jpg') {
+                            mime = 'image/jpeg';
+                        } else if (outType === 'image/webp') {
+                            mime = 'image/webp';
+                        } else {
+                            mime = 'image/jpeg';
+                        }
+
+                        const blob = await canvasToBlob(canvas, mime, useQuality);
                         if (!blob) continue;
 
                         const percent = Math.min(95, Math.round(((s * qualityList.length + q) / (scaleList.length * qualityList.length)) * 100));
@@ -872,6 +938,15 @@
             }
         }
 
+        function getSelectedTypes() {
+            const arr = [];
+            if (document.getElementById('optImage').checked) arr.push('image');
+            if (document.getElementById('optPdf').checked) arr.push('pdf');
+            if (document.getElementById('optWord').checked) arr.push('word');
+            if (document.getElementById('optCsv').checked) arr.push('csv');
+            return arr;
+        }
+
         window.removeFile = function(id) {
             files = files.filter(f => f.id !== id);
             document.getElementById(`file-${id}`).remove();
@@ -887,12 +962,46 @@
         compressAllBtn.addEventListener('click', async () => {
             compressAllBtn.disabled = true;
             
+            // read selected type options
+            const selected = getSelectedTypes();
+
             for (let fileData of files) {
                 if (fileData.status !== 'pending') continue;
+                // skip if user didn't select this type
+                if (!selected.includes(fileData.type)) {
+                    // mark as skipped visually
+                    const statusBadge = document.getElementById(`status-${fileData.id}`);
+                    const fileCard = document.getElementById(`file-${fileData.id}`);
+                    const progressBar = document.getElementById(`progress-${fileData.id}`);
+                    const actionsDiv = document.getElementById(`actions-${fileData.id}`);
+                    fileData.status = 'skipped';
+                    fileCard.classList.add('error');
+                    statusBadge.className = 'status-badge badge-pending';
+                    statusBadge.textContent = 'Dilewati';
+                    progressBar.style.width = '0%';
+                    actionsDiv.innerHTML = `<button class="btn btn-remove" onclick="removeFile(${fileData.id})">❌</button>`;
+                    continue;
+                }
+
                 if (fileData.type === 'image') {
                     await compressImage(fileData);
-                } else {
+                } else if (fileData.type === 'pdf') {
                     await compressFile(fileData);
+                } else if (fileData.type === 'word' || fileData.type === 'csv') {
+                    // not implemented yet: show error message
+                    const fileCard = document.getElementById(`file-${fileData.id}`);
+                    const statusBadge = document.getElementById(`status-${fileData.id}`);
+                    const actionsDiv = document.getElementById(`actions-${fileData.id}`);
+                    const sizeInfo = document.querySelector(`#file-${fileData.id} .file-size`);
+                    fileData.status = 'error';
+                    fileData.error = 'Konversi Word/CSV belum diimplementasikan';
+
+                    fileCard.classList.remove('processing');
+                    fileCard.classList.add('error');
+                    statusBadge.className = 'status-badge badge-error';
+                    statusBadge.textContent = '✗ Belum tersedia';
+                    sizeInfo.innerHTML = `<span style="color: #ef4444;">Belum tersedia</span>`;
+                    actionsDiv.innerHTML = `<button class="btn btn-remove" onclick="removeFile(${fileData.id})">❌</button>`;
                 }
             }
 
@@ -1051,6 +1160,200 @@
             return lastBytes;
         }
 
+        // Convert Word (.docx) to PDF bytes using Mammoth -> render HTML -> html2canvas -> pdf-lib
+        async function convertWordToPdfBytes(arrayBuffer) {
+            // mammoth.convertToHtml accepts {arrayBuffer}
+            const result = await mammoth.convertToHtml({ arrayBuffer });
+            const html = result.value || '';
+
+            // create offscreen container
+            const container = document.createElement('div');
+            container.style.position = 'absolute';
+            container.style.left = '-9999px';
+            container.style.top = '-9999px';
+            container.style.width = '800px';
+            container.innerHTML = html;
+            document.body.appendChild(container);
+
+            // render container to canvas
+            const canvas = await html2canvas(container, { scale: 2, useCORS: true });
+            document.body.removeChild(container);
+
+            // convert canvas to JPEG
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+            const imgBytes = await (await fetch(dataUrl)).arrayBuffer();
+
+            const pdfDoc = await PDFLib.PDFDocument.create();
+            const embedded = await pdfDoc.embedJpg(imgBytes);
+            const px = canvas.width;
+            const py = canvas.height;
+            const page = pdfDoc.addPage([px, py]);
+            page.drawImage(embedded, { x: 0, y: 0, width: px, height: py });
+
+            const bytes = await pdfDoc.save();
+            return bytes;
+        }
+
+        // Convert Excel (.xlsx/.xls) or CSV to PDF bytes using SheetJS -> render HTML -> html2canvas -> pdf-lib
+        async function convertSpreadsheetToPdfBytes(arrayBuffer, fileName) {
+            // Try to parse with SheetJS
+            let workbook;
+            try {
+                workbook = XLSX.read(arrayBuffer, { type: 'array' });
+            } catch (e) {
+                // try as text for CSV
+                const text = new TextDecoder().decode(arrayBuffer);
+                workbook = XLSX.read(text, { type: 'string' });
+            }
+
+            // Render first sheet to HTML
+            const firstSheetName = workbook.SheetNames[0];
+            const sheet = workbook.Sheets[firstSheetName];
+            const html = XLSX.utils.sheet_to_html(sheet);
+
+            // create offscreen container
+            const container = document.createElement('div');
+            container.style.position = 'absolute';
+            container.style.left = '-9999px';
+            container.style.top = '-9999px';
+            container.style.width = '900px';
+            container.innerHTML = html;
+            document.body.appendChild(container);
+
+            // render to canvas
+            const canvas = await html2canvas(container, { scale: 2, useCORS: true });
+            document.body.removeChild(container);
+
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+            const imgBytes = await (await fetch(dataUrl)).arrayBuffer();
+
+            const pdfDoc = await PDFLib.PDFDocument.create();
+            const embedded = await pdfDoc.embedJpg(imgBytes);
+            const px = canvas.width;
+            const py = canvas.height;
+            const page = pdfDoc.addPage([px, py]);
+            page.drawImage(embedded, { x: 0, y: 0, width: px, height: py });
+
+            const bytes = await pdfDoc.save();
+            return bytes;
+        }
+
+        // Compress PDF bytes pipeline (reuse rasterCompress if needed). Updates fileData and UI similar to compressFile
+        async function compressPdfBytes(arrayBuffer, fileData) {
+            const { id, file } = fileData;
+            const fileCard = document.getElementById(`file-${id}`);
+            const statusBadge = document.getElementById(`status-${id}`);
+            const progressBar = document.getElementById(`progress-${id}`);
+            const actionsDiv = document.getElementById(`actions-${id}`);
+
+            fileData.status = 'processing';
+            fileCard.classList.add('processing');
+            statusBadge.className = 'status-badge badge-processing';
+            statusBadge.textContent = 'Memproses...';
+
+            try {
+                progressBar.style.width = '20%';
+                let pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer);
+                progressBar.style.width = '35%';
+
+                try { pdfDoc.setTitle(''); pdfDoc.setAuthor(''); } catch (e) {}
+
+                let compressedBytes = await pdfDoc.save({ useObjectStreams: true });
+                progressBar.style.width = '55%';
+
+                const TARGET_BYTES = 1 * 1024 * 1024;
+                let attempts = 0;
+                while (compressedBytes.byteLength > TARGET_BYTES && attempts < 3) {
+                    const tempDoc = await PDFLib.PDFDocument.load(compressedBytes);
+                    compressedBytes = await tempDoc.save({ useObjectStreams: true });
+                    attempts++;
+                    progressBar.style.width = `${55 + attempts * 8}%`;
+                }
+
+                if (compressedBytes.byteLength > TARGET_BYTES) {
+                    progressBar.style.width = '65%';
+                    const rasterBytes = await rasterCompress(arrayBuffer, TARGET_BYTES, (p) => {
+                        const percent = 65 + Math.round(p * 30);
+                        progressBar.style.width = percent + '%';
+                    });
+                    if (rasterBytes && rasterBytes.byteLength > 0) compressedBytes = rasterBytes;
+                }
+
+                progressBar.style.width = '100%';
+
+                const compressedSizeMB = (compressedBytes.byteLength / (1024 * 1024)).toFixed(2);
+                const originalSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                const reduction = ((1 - compressedBytes.byteLength / file.size) * 100).toFixed(1);
+
+                fileData.status = 'success';
+                fileData.compressed = new Blob([compressedBytes], { type: 'application/pdf' });
+
+                fileCard.classList.remove('processing');
+                fileCard.classList.add('success');
+                statusBadge.className = 'status-badge badge-success';
+                statusBadge.textContent = `✓ ${compressedSizeMB} MB`;
+
+                const sizeInfo = document.querySelector(`#file-${id} .file-size`);
+                sizeInfo.innerHTML = `${originalSizeMB} MB → <strong style="color: #34d399">${compressedSizeMB} MB</strong> (↓${reduction}%)`;
+
+                actionsDiv.innerHTML = `
+                    <button class="btn btn-download" onclick="downloadFile(${id})">⬇️</button>
+                    <button class="btn btn-remove" onclick="removeFile(${id})">❌</button>
+                `;
+
+            } catch (error) {
+                console.error(error);
+                fileData.status = 'error';
+                fileData.error = (error && error.message) ? error.message : String(error);
+
+                fileCard.classList.remove('processing');
+                fileCard.classList.add('error');
+                statusBadge.className = 'status-badge badge-error';
+                statusBadge.textContent = '✗ Gagal';
+
+                const sizeInfo = document.querySelector(`#file-${id} .file-size`);
+                sizeInfo.innerHTML = `<span style="color: #ef4444;">Error: Gagal mengkompress</span>`;
+            }
+
+            updateUI();
+        }
+
+        // Convert + compress office files based on fileData.type
+        async function convertAndCompressOffice(fileData) {
+            const { id, file, type } = fileData;
+            const arrayBuffer = await file.arrayBuffer();
+
+            try {
+                let pdfBytes = null;
+                if (type === 'word') {
+                    pdfBytes = await convertWordToPdfBytes(arrayBuffer);
+                } else if (type === 'csv') {
+                    pdfBytes = await convertSpreadsheetToPdfBytes(arrayBuffer, file.name);
+                }
+
+                if (pdfBytes) {
+                    await compressPdfBytes(pdfBytes, fileData);
+                } else {
+                    throw new Error('Konversi ke PDF gagal');
+                }
+            } catch (err) {
+                console.error(err);
+                fileData.status = 'error';
+                fileData.error = (err && err.message) ? err.message : String(err);
+                const fileCard = document.getElementById(`file-${id}`);
+                const statusBadge = document.getElementById(`status-${id}`);
+                const actionsDiv = document.getElementById(`actions-${id}`);
+                const sizeInfo = document.querySelector(`#file-${id} .file-size`);
+
+                fileCard.classList.remove('processing');
+                fileCard.classList.add('error');
+                statusBadge.className = 'status-badge badge-error';
+                statusBadge.textContent = '✗ Gagal';
+                sizeInfo.innerHTML = `<span style="color: #ef4444;">Error: Konversi gagal</span>`;
+                actionsDiv.innerHTML = `<button class="btn btn-remove" onclick="removeFile(${id})">❌</button>`;
+            }
+        }
+
         window.downloadFile = function(id) {
             const fileData = files.find(f => f.id === id);
             if (!fileData || !fileData.compressed) return;
@@ -1060,7 +1363,10 @@
             a.href = url;
             const baseName = fileData.file.name.replace(/\.[^/.]+$/, '');
             if (fileData.type === 'image') {
-                a.download = baseName + '_compressed.jpg';
+                // try to preserve original extension if possible
+                const origExt = (fileData.file.name.match(/\.[^.]+$/) || ['.jpg'])[0];
+                const ext = fileData.compressed.type ? ('.' + fileData.compressed.type.split('/')[1]) : origExt;
+                a.download = baseName + '_compressed' + ext;
             } else {
                 a.download = baseName + '_compressed.pdf';
             }
