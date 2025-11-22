@@ -587,12 +587,18 @@
                 <div class="upload-icon">📤</div>
                 <p class="upload-text">Klik atau Drag & Drop File PDF</p>
                 <p class="upload-hint">Support multiple files • Maksimal 50 MB per file</p>
-                <div style="margin-top:12px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+                <div style="margin-top:12px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap; align-items:center;">
                     <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);"><input type="checkbox" id="optImage" checked> Image</label>
                     <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);"><input type="checkbox" id="optPdf" checked> PDF</label>
-                    <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);"><input type="checkbox" id="optWord" > Word</label>
-                    <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);"><input type="checkbox" id="optCsv" > CSV</label>
                     <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);"><input type="checkbox" id="optAggressiveImage"> Aggressive image (PNG/GIF → WebP)</label>
+                    <label style="display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.85);">Output Image:&nbsp;
+                        <select id="imageFormatSelect" style="border-radius:8px;padding:6px;background:rgba(255,255,255,0.06);color:#fff;">
+                            <option value="preserve">Preserve (auto)</option>
+                            <option value="jpeg">JPEG</option>
+                            <option value="png">PNG</option>
+                            <option value="webp">WebP</option>
+                        </select>
+                    </label>
                 </div>
                 <input type="file" id="fileInput" accept=".pdf,image/*,.jpg,.jpeg,.png,.gif,.webp" multiple>
             </div>
@@ -730,6 +736,12 @@
                 </div>
                 <div class="status-badge badge-pending" id="status-${id}">Menunggu</div>
                 <div class="file-actions" id="actions-${id}">
+                    ${type === 'image' ? `<select id="format-${id}" style="border-radius:8px;padding:6px;background:rgba(255,255,255,0.03);color:#fff;">
+                        <option value="preserve">Preserve</option>
+                        <option value="jpeg">JPEG</option>
+                        <option value="png">PNG</option>
+                        <option value="webp">WebP</option>
+                    </select>` : ''}
                     <button class="btn btn-remove" onclick="removeFile(${id})">❌</button>
                 </div>
             `;
@@ -747,6 +759,15 @@
         // Compress image file to target bytes (1MB) by reducing quality and scale
         async function compressImage(fileData) {
             const { id, file } = fileData;
+            // determine desired format: per-file override or global
+            let desiredFormat = 'preserve';
+            try {
+                const sel = document.getElementById(`format-${id}`);
+                if (sel) desiredFormat = sel.value;
+                else desiredFormat = document.getElementById('imageFormatSelect') ? document.getElementById('imageFormatSelect').value : 'preserve';
+            } catch (e) {
+                desiredFormat = document.getElementById('imageFormatSelect') ? document.getElementById('imageFormatSelect').value : 'preserve';
+            }
             const fileCard = document.getElementById(`file-${id}`);
             const statusBadge = document.getElementById(`status-${id}`);
             const progressBar = document.getElementById(`progress-${id}`);
@@ -777,20 +798,25 @@
 
                 let bestBlob = null;
 
-                // determine output mime type to preserve original where possible
+                // determine output mime type based on desiredFormat, preserve means auto
                 let outType = file.type || 'image/jpeg';
                 if (!outType.startsWith('image/')) outType = 'image/jpeg';
-                // If user enabled aggressive conversion, convert PNG/GIF to WebP for better compression
-                try {
-                    const aggressive = !!document.getElementById('optAggressiveImage') && document.getElementById('optAggressiveImage').checked;
-                    const lowerName = file.name.toLowerCase();
-                    if (aggressive) {
-                        if (outType === 'image/png' || lowerName.endsWith('.png') || lowerName.endsWith('.gif')) {
-                            outType = 'image/webp';
+
+                if (desiredFormat && desiredFormat !== 'preserve') {
+                    if (desiredFormat === 'jpeg') outType = 'image/jpeg';
+                    else if (desiredFormat === 'png') outType = 'image/png';
+                    else if (desiredFormat === 'webp') outType = 'image/webp';
+                } else {
+                    // preserve original but respect aggressive option
+                    try {
+                        const aggressive = !!document.getElementById('optAggressiveImage') && document.getElementById('optAggressiveImage').checked;
+                        const lowerName = file.name.toLowerCase();
+                        if (aggressive) {
+                            if (outType === 'image/png' || lowerName.endsWith('.png') || lowerName.endsWith('.gif')) {
+                                outType = 'image/webp';
+                            }
                         }
-                    }
-                } catch (e) {
-                    // ignore if DOM not ready
+                    } catch (e) {}
                 }
 
                 // helper: check WebP support in this browser
@@ -819,7 +845,7 @@
                     for (let q = 0; q < qualityList.length; q++) {
                         const quality = qualityList[q];
 
-                        // choose mime/quality depending on original type
+                        // choose mime/quality depending on outType
                         let mime = outType;
                         let useQuality = quality;
                         if (outType === 'image/png') {
@@ -940,10 +966,14 @@
 
         function getSelectedTypes() {
             const arr = [];
-            if (document.getElementById('optImage').checked) arr.push('image');
-            if (document.getElementById('optPdf').checked) arr.push('pdf');
-            if (document.getElementById('optWord').checked) arr.push('word');
-            if (document.getElementById('optCsv').checked) arr.push('csv');
+            const optImageEl = document.getElementById('optImage');
+            const optPdfEl = document.getElementById('optPdf');
+            const optWordEl = document.getElementById('optWord');
+            const optCsvEl = document.getElementById('optCsv');
+            if (optImageEl && optImageEl.checked) arr.push('image');
+            if (optPdfEl && optPdfEl.checked) arr.push('pdf');
+            if (optWordEl && optWordEl.checked) arr.push('word');
+            if (optCsvEl && optCsvEl.checked) arr.push('csv');
             return arr;
         }
 
@@ -1383,8 +1413,11 @@
                         a.href = url;
                         const baseName = fileData.file.name.replace(/\.[^/.]+$/, '');
                         if (fileData.type === 'image') {
-                            a.download = baseName + '_compressed.jpg';
+                            const mime = fileData.compressed.type || '';
+                            const ext = mime.includes('/') ? '.' + mime.split('/')[1].replace('jpeg', 'jpg') : '.jpg';
+                            a.download = baseName + '_compressed' + ext;
                         } else {
+                            // assume PDF for non-image
                             a.download = baseName + '_compressed.pdf';
                         }
                         a.click();
